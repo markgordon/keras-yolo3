@@ -199,6 +199,10 @@ def _main(args):
                 all_layers.append(skip_layer)
                 prev_layer = skip_layer
 
+        elif section.startswith('activation'):
+            all_layers.append(LeakyReLU(alpha=0.1)(prev_layer))
+			prev_layer = all_layers[-1]
+			
         elif section.startswith('maxpool'):
             size = int(cfg_parser[section]['size'])
             stride = int(cfg_parser[section]['stride'])
