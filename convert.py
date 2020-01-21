@@ -232,8 +232,8 @@ def _main(args):
             prev_layer = all_layers[-1]
 
         elif section.startswith('net'):
-		    height = int(cfg_parser[section]['height'])
-		    width = int(cfg_parser[section]['width'])
+            height = int(cfg_parser[section]['height'])
+            width = int(cfg_parser[section]['width'])
 
         else:
             raise ValueError(
