@@ -9,15 +9,15 @@ import configparser
 import io
 import os
 from collections import defaultdict
-
+import tensorflow as tf
 import numpy as np
-from keras import backend as K
-from keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
+from tensorflow.keras import backend as K
+from tensorflow.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
                           UpSampling2D, MaxPooling2D, Concatenate)
-from keras.layers.advanced_activations import LeakyReLU
-from keras.layers.normalization import BatchNormalization
-from keras.models import Model
-from keras.regularizers import l2
+from tensorflow.keras.layers import LeakyReLU
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.models import Model
+from tensorflow.keras.regularizers import l2
 from keras.utils.vis_utils import plot_model as plot
 
 
@@ -85,10 +85,9 @@ def _main(args):
     cfg_parser.read_file(unique_config_file)
 
     print('Creating Keras model.')
-    input_layer = Input(shape=(386, 284, 3))
+    input_layer = Input(shape=(384, 288, 3))
     prev_layer = input_layer
     all_layers = []
-
     weight_decay = float(cfg_parser['net_0']['decay']
                          ) if 'net_0' in cfg_parser.sections() else 5e-4
     count = 0

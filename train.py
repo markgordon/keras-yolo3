@@ -22,7 +22,7 @@ def _main():
     num_classes = len(class_names)
     anchors = get_anchors(anchors_path)
 
-    input_shape = (416,416) # multiple of 32, hw
+    input_shape = (384,286) # multiple of 32, hw
 
     is_tiny_version = len(anchors)==6 # default setting
     if is_tiny_version:
@@ -50,7 +50,7 @@ def _main():
     # Train with frozen layers first, to get a stable loss.
     # Adjust num epochs to your dataset. This step is enough to obtain a not bad model.
     if True:
-        model.compile(optimizer=Adam(lr=1e-3), loss={
+        model.compile(optimizer=SGD(lr=1e-2), loss={
             # use custom yolo_loss Lambda layer.
             'yolo_loss': lambda y_true, y_pred: y_pred})
 
