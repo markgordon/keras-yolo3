@@ -1,0 +1,1 @@
+python convert.py %1 %2 model_data/%3.h5
