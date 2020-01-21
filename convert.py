@@ -85,7 +85,7 @@ def _main(args):
     cfg_parser.read_file(unique_config_file)
 
     print('Creating Keras model.')
-    input_layer = Input(shape=(None, None, 3))
+    input_layer = Input(shape=(386, 284, 3))
     prev_layer = input_layer
     all_layers = []
 
@@ -232,7 +232,8 @@ def _main(args):
             prev_layer = all_layers[-1]
 
         elif section.startswith('net'):
-            pass
+		    height = int(cfg_parser[section]['height'])
+		    width = int(cfg_parser[section]['width'])
 
         else:
             raise ValueError(
