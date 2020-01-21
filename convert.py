@@ -201,7 +201,7 @@ def _main(args):
 
         elif section.startswith('activation'):
             all_layers.append(LeakyReLU(alpha=0.1)(prev_layer))
-			prev_layer = all_layers[-1]
+            prev_layer = all_layers[-1]
 			
         elif section.startswith('maxpool'):
             size = int(cfg_parser[section]['size'])
