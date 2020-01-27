@@ -15,6 +15,7 @@ from tensorflow.keras import backend as K
 from tensorflow.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
                           UpSampling2D, MaxPooling2D, Concatenate)
 from tensorflow.keras.layers import LeakyReLU
+from tensorflow.keras.activations import sigmoid
 from tensorflow.keras.layers import BatchNormalization
 from tensorflow.keras.models import Model
 from tensorflow.keras.regularizers import l2
@@ -153,7 +154,7 @@ def _main(args):
 
             # Handle activation.
             act_fn = None
-            if activation == 'leaky':
+            if activation != 'linear':
                 pass  # Add advanced activation later.
             elif activation != 'linear':
                 raise ValueError(
@@ -184,6 +185,10 @@ def _main(args):
                 act_layer = LeakyReLU(alpha=0.1)(prev_layer)
                 prev_layer = act_layer
                 all_layers.append(act_layer)
+            elif activation == 'swish':
+                act_layer = sigmoid(prev_layer)
+                prev_layer = act_layer
+                all_layers.append(act_layer)
 
         elif section.startswith('route'):
             ids = [int(i) for i in cfg_parser[section]['layers'].split(',')]
@@ -197,10 +202,6 @@ def _main(args):
                 skip_layer = layers[0]  # only one layer to route
                 all_layers.append(skip_layer)
                 prev_layer = skip_layer
-
-        elif section.startswith('activation'):
-            all_layers.append(LeakyReLU(alpha=0.1)(prev_layer))
-            prev_layer = all_layers[-1]
 			
         elif section.startswith('maxpool'):
             size = int(cfg_parser[section]['size'])
@@ -215,8 +216,9 @@ def _main(args):
         elif section.startswith('shortcut'):
             index = int(cfg_parser[section]['from'])
             activation = cfg_parser[section]['activation']
-            assert activation == 'linear', 'Only linear activation supported.'
             all_layers.append(Add()([all_layers[index], prev_layer]))
+            prev_layer = all_layers[-1]
+            all_layers.append(LeakyReLU(alpha=0.1)(prev_layer))
             prev_layer = all_layers[-1]
 
         elif section.startswith('upsample'):
