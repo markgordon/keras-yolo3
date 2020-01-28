@@ -108,3 +108,8 @@ ENV/
 .mypy_cache/
 *.tflite
 *.cfg
+/clustering/
+/api/
+/keras/
+/internal/
+/quantization/

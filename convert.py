@@ -11,17 +11,20 @@ import os
 from collections import defaultdict
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras import backend as K
-from tensorflow.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
-                          UpSampling2D, MaxPooling2D, Concatenate)
-from tensorflow.keras.layers import LeakyReLU
-from tensorflow.keras.activations import sigmoid
-from tensorflow.keras.layers import BatchNormalization
-from tensorflow.keras.models import Model
-from tensorflow.keras.regularizers import l2
-from keras.utils.vis_utils import plot_model as plot
-
-
+from tensorflow.python.keras import backend as K
+from tensorflow.python.keras import layers as L
+from tensorflow.python.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
+                          UpSampling2D, MaxPooling2D, Concatenate, BatchNormalization, LeakyReLU)
+from tensorflow.python.keras.activations import sigmoid
+from tensorflow.python.keras.models import Model
+from tensorflow.python.keras.regularizers import l2
+#from tensorflow.keras.utils.vis_utils import plot_model as plot
+from tensorflow_model_optimization.python.core import sparsity
+from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
+from tensorflow_model_optimization.python.core.sparsity.keras import prune
+from tensorflow_model_optimization.python.core.sparsity.keras import pruning_callbacks
+from tensorflow_model_optimization.python.core.sparsity.keras import pruning_schedule
+from train import get_anchors,get_classes,data_generator_wrapper
 parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
 parser.add_argument('config_path', help='Path to Darknet cfg file.')
 parser.add_argument('weights_path', help='Path to Darknet weights file.')
@@ -57,6 +60,28 @@ def unique_config_sections(config_file):
 
 # %%
 def _main(args):
+    pruning_params = {
+          'pruning_schedule': pruning_schedule.PolynomialDecay(initial_sparsity=0.30,
+                                                       final_sparsity=0.60,
+                                                       begin_step=0,
+                                                       end_step=4,
+                                                       frequency=100)
+    }
+    annotation_path = 'model_data/combined.txt'
+    log_dir = 'logs/000/'
+    classes_path = 'model_data/voc_classes.txt'
+    anchors_path = 'model_data/yolo_anchors.txt'
+    class_names = get_classes(classes_path)
+    num_classes = len(class_names)
+    anchors = get_anchors(anchors_path)
+    model_path = 'model_data/'
+    init_model= model_path + '/pelee3'
+    new_pruned_keras_file = model_path + 'pruned_' + init_model
+    epochs = 100
+    batch_size = 16
+    init_epoch = 50
+    input_shape = (384,286) # multiple of 32, hw
+    log_dir = 'logs/000/'
     config_path = os.path.expanduser(args.config_path)
     weights_path = os.path.expanduser(args.weights_path)
     assert config_path.endswith('.cfg'), '{} is not a .cfg file'.format(
@@ -65,10 +90,15 @@ def _main(args):
         '.weights'), '{} is not a .weights file'.format(weights_path)
 
     output_path = os.path.expanduser(args.output_path)
-    assert output_path.endswith(
-        '.h5'), 'output path {} is not a .h5 file'.format(output_path)
     output_root = os.path.splitext(output_path)[0]
-
+    val_split = 0.1
+    with open(annotation_path) as f:
+        lines = f.readlines()
+    np.random.seed(10101)
+    np.random.shuffle(lines)
+    np.random.seed(None)
+    num_val = int(len(lines)*val_split)
+    num_train = len(lines) - num_val
     # Load weights and config.
     print('Loading weights.')
     weights_file = open(weights_path, 'rb')
@@ -84,7 +114,7 @@ def _main(args):
     unique_config_file = unique_config_sections(config_path)
     cfg_parser = configparser.ConfigParser()
     cfg_parser.read_file(unique_config_file)
-
+    first_layer = True
     print('Creating Keras model.')
     input_layer = Input(shape=(384, 288, 3))
     prev_layer = input_layer
@@ -165,20 +195,29 @@ def _main(args):
             if stride>1:
                 # Darknet uses left and top padding instead of 'same' mode
                 prev_layer = ZeroPadding2D(((1,0),(1,0)))(prev_layer)
-            conv_layer = (Conv2D(
-                filters, (size, size),
-                strides=(stride, stride),
-                kernel_regularizer=l2(weight_decay),
-                use_bias=not batch_normalize,
-                weights=conv_weights,
-                activation=act_fn,
-                padding=padding))(prev_layer)
-
+            if(first_layer):
+                conv_layer = L.Conv2D(
+                    filters, (size, size),
+                    strides=(stride, stride),
+                    kernel_regularizer=l2(weight_decay),
+                    use_bias=not batch_normalize,
+                    weights=conv_weights,
+                    activation=act_fn,
+                    padding=padding)(prev_layer)
+            else:
+                conv_layer =  prune.prune_low_magnitude(L.Conv2D(
+                        filters, (size, size),
+                        strides=(stride, stride),
+                        kernel_regularizer=l2(weight_decay),
+                        use_bias=not batch_normalize,
+                        weights=conv_weights,
+                        activation=act_fn,
+                        padding=padding))(prev_layer)
             if batch_normalize:
-                conv_layer = (BatchNormalization(
-                    weights=bn_weight_list))(conv_layer)
+                conv_layer = BatchNormalization(
+                    weights=bn_weight_list)(conv_layer)
             prev_layer = conv_layer
-
+            first_layer=False
             if activation == 'linear':
                 all_layers.append(prev_layer)
             elif activation == 'leaky':
@@ -244,25 +283,62 @@ def _main(args):
     if len(out_index)==0: out_index.append(len(all_layers)-1)
     model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
     print(model.summary())
-    if args.weights_only:
-        model.save_weights('{}'.format(output_path))
-        print('Saved Keras weights to {}'.format(output_path))
-    else:
-        model.save('{}'.format(output_path))
-        print('Saved Keras model to {}'.format(output_path))
+    if False:
+        if args.weights_only:
+            model.save_weights('{}'.format(output_path))
+            print('Saved Keras weights to {}'.format(output_path))
+        else:
+            model.save('{}'.format(output_path),save_format='tf')
+            print('Saved Keras model to {}'.format(output_path))
 
-    # Check to see if all weights have been read.
-    remaining_weights = len(weights_file.read()) / 4
-    weights_file.close()
-    print('Read {} of {} from Darknet weights.'.format(count, count +
-                                                       remaining_weights))
-    if remaining_weights > 0:
-        print('Warning: {} unused weights'.format(remaining_weights))
+        # Check to see if all weights have been read.
+        remaining_weights = len(weights_file.read()) / 4
+        weights_file.close()
+        print('Read {} of {} from Darknet weights.'.format(count, count +
+                                                           remaining_weights))
+        if remaining_weights > 0:
+            print('Warning: {} unused weights'.format(remaining_weights))
 
-    if args.plot_model:
-        plot(model, to_file='{}.png'.format(output_root), show_shapes=True)
-        print('Saved model plot to {}.png'.format(output_root))
-
-
+        if args.plot_model:
+            plot(model, to_file='{}.png'.format(output_root), show_shapes=True)
+            print('Saved model plot to {}.png'.format(output_root))
+    if True:
+        model.compile(
+            loss=tf.keras.losses.categorical_crossentropy,
+            optimizer='adam',
+            metrics=['accuracy'],
+            callbacks = [
+                sparsity.keras.pruning_callbacks.UpdatePruningStep(),
+                sparsity.keras.pruning_callbacks.PruningSummaries(log_dir=log_dir, profile_batch=0)
+            ]
+            )
+        checkpoint = ModelCheckpoint(log_dir + 'ep{epoch:03d}-loss{loss:.3f}-val_loss{val_loss:.3f}.h5',
+                                     monitor='val_loss', save_weights_only=True, save_best_only=True, period=3)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=3, verbose=1)
+        early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=10, verbose=1)
+        logging = TensorBoard(log_dir=log_dir)
+        model.fit_generator(data_generator_wrapper(lines[:num_train], batch_size, input_shape, anchors, num_classes),
+                            steps_per_epoch=max(1, num_train // batch_size),
+                            validation_data=data_generator_wrapper(lines[num_train:], batch_size, input_shape, anchors,
+                                                                   num_classes),
+                            validation_steps=max(1, num_val // batch_size),
+                            epochs=4,
+                            initial_epoch=init_epoch,
+                            callbacks=[logging, checkpoint, reduce_lr])
+        #score = model.evaluate(data_generator_wrapper(lines[:num_train], batch_size, input_shape, anchors, num_classes),
+        #                       class_names, verbose=0)
+        #print('Test loss:', score[0])
+        #print('Test accuracy:', score[1])
+        final_model = sparsity.prune.strip_pruning(model)
+        final_model.summary()
+        print('Saving pruned model to: ', new_pruned_keras_file)
+        final_model.save('{}'.format(output_path),save_format='tf')
+        tflite_model_file = mode_path + "sparse_" + init_model
+        converter = tf.lite.TFLiteConverter.from_keras_model_file(final_model)
+        converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
+        tflite_model = converter.convert()
+        with open(tflite_model_file, 'wb') as f:
+          f.write(tflite_model)
+          
 if __name__ == '__main__':
     _main(parser.parse_args())
