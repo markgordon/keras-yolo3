@@ -4,6 +4,9 @@ Reads Darknet config and weights and creates Keras model with TF backend.
 
 """
 
+import pyximport
+pyximport.install()
+import configparser
 import argparse
 import configparser
 import io
@@ -11,6 +14,8 @@ import os
 from collections import defaultdict
 import tensorflow as tf
 import numpy as np
+from tensorflow.keras.optimizers import Adam, SGD
+from tensorflow.keras.layers import Input, Lambda
 from tensorflow.python.keras import backend as K
 from tensorflow.python.keras import layers as L
 from tensorflow.python.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
@@ -25,6 +30,7 @@ from tensorflow_model_optimization.python.core.sparsity.keras import prune
 from tensorflow_model_optimization.python.core.sparsity.keras import pruning_callbacks
 from tensorflow_model_optimization.python.core.sparsity.keras import pruning_schedule
 from train import get_anchors,get_classes,data_generator_wrapper
+from yolo3.model import yolo_loss
 parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
 parser.add_argument('config_path', help='Path to Darknet cfg file.')
 parser.add_argument('weights_path', help='Path to Darknet weights file.')
@@ -61,15 +67,15 @@ def unique_config_sections(config_file):
 # %%
 def _main(args):
     pruning_params = {
-          'pruning_schedule': pruning_schedule.PolynomialDecay(initial_sparsity=0.30,
-                                                       final_sparsity=0.60,
+          'pruning_schedule': pruning_schedule.PolynomialDecay(initial_sparsity=0.40,
+                                                       final_sparsity=0.80,
                                                        begin_step=0,
-                                                       end_step=4,
+                                                       end_step=5,
                                                        frequency=100)
     }
-    annotation_path = 'model_data/combined.txt'
+    annotation_path = 'model_data/combined1.txt'
     log_dir = 'logs/000/'
-    classes_path = 'model_data/voc_classes.txt'
+    classes_path = 'model_data/classes.txt'
     anchors_path = 'model_data/yolo_anchors.txt'
     class_names = get_classes(classes_path)
     num_classes = len(class_names)
@@ -80,7 +86,7 @@ def _main(args):
     epochs = 100
     batch_size = 16
     init_epoch = 50
-    input_shape = (384,286) # multiple of 32, hw
+    input_shape = (384,288) # multiple of 32, hw
     log_dir = 'logs/000/'
     config_path = os.path.expanduser(args.config_path)
     weights_path = os.path.expanduser(args.weights_path)
@@ -116,8 +122,6 @@ def _main(args):
     cfg_parser.read_file(unique_config_file)
     first_layer = True
     print('Creating Keras model.')
-    input_layer = Input(shape=(384, 288, 3))
-    prev_layer = input_layer
     all_layers = []
     weight_decay = float(cfg_parser['net_0']['decay']
                          ) if 'net_0' in cfg_parser.sections() else 5e-4
@@ -274,6 +278,9 @@ def _main(args):
         elif section.startswith('net'):
             height = int(cfg_parser[section]['height'])
             width = int(cfg_parser[section]['width'])
+            input_layer = Input(shape=(height, width, 3))
+            prev_layer = input_layer
+            input_shape = (width, height)
 
         else:
             raise ValueError(
@@ -281,7 +288,14 @@ def _main(args):
 
     # Create and save model.
     if len(out_index)==0: out_index.append(len(all_layers)-1)
-    model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
+    num_anchors = len(anchors)
+    h,w = input_shape
+    y_true = [Input(shape=(h//{0:32, 1:16, 2:8}[l], w//{0:32, 1:16, 2:8}[l], \
+        num_anchors//3, num_classes+5)) for l in range(3)]
+    model_loss = Lambda(yolo_loss, output_shape=(1,), name='yolo_loss',
+        arguments={'anchors': anchors, 'num_classes': num_classes, 'ignore_thresh': 0.5})(
+        [[all_layers[i] for i in out_index], *y_true])
+    model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index], model_loss=model_loss)
     print(model.summary())
     if False:
         if args.weights_only:
@@ -299,10 +313,8 @@ def _main(args):
         if remaining_weights > 0:
             print('Warning: {} unused weights'.format(remaining_weights))
 
-        if args.plot_model:
-            plot(model, to_file='{}.png'.format(output_root), show_shapes=True)
-            print('Saved model plot to {}.png'.format(output_root))
     if True:
+        model = create_model(model, anchors, num_classes, input_shape, input_layer, layers, out_index)
         model.compile(
             loss=tf.keras.losses.categorical_crossentropy,
             optimizer='adam',
@@ -312,33 +324,38 @@ def _main(args):
                 sparsity.keras.pruning_callbacks.PruningSummaries(log_dir=log_dir, profile_batch=0)
             ]
             )
-        checkpoint = ModelCheckpoint(log_dir + 'ep{epoch:03d}-loss{loss:.3f}-val_loss{val_loss:.3f}.h5',
-                                     monitor='val_loss', save_weights_only=True, save_best_only=True, period=3)
-        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=3, verbose=1)
-        early_stopping = EarlyStopping(monitor='val_loss', min_delta=0, patience=10, verbose=1)
-        logging = TensorBoard(log_dir=log_dir)
+        for i in range(len(model.layers)):
+            model.layers[i].trainable = True
+        model.compile(optimizer=Adam(lr=1e-3), loss={'yolo_loss': lambda y_true, y_pred: y_pred}) # recompile to apply the change
+        print('Unfreeze all of the layers.')
+        print(model.summary())
+
+        batch_size = 16 # note that more GPU memory is required after unfreezing the body
+        print('Train on {} samples, val on {} samples, with batch size {}.'.format(num_train, num_val, batch_size))
         model.fit_generator(data_generator_wrapper(lines[:num_train], batch_size, input_shape, anchors, num_classes),
-                            steps_per_epoch=max(1, num_train // batch_size),
-                            validation_data=data_generator_wrapper(lines[num_train:], batch_size, input_shape, anchors,
-                                                                   num_classes),
-                            validation_steps=max(1, num_val // batch_size),
-                            epochs=4,
-                            initial_epoch=init_epoch,
-                            callbacks=[logging, checkpoint, reduce_lr])
+            steps_per_epoch=max(1, num_train//batch_size),
+            validation_data=data_generator_wrapper(lines[num_train:], batch_size, input_shape, anchors, num_classes),
+            validation_steps=max(1, num_val//batch_size),
+            epochs=5,
+            initial_epoch=0)
+
+
+       #m2train.m2train(args,model)
         #score = model.evaluate(data_generator_wrapper(lines[:num_train], batch_size, input_shape, anchors, num_classes),
         #                       class_names, verbose=0)
         #print('Test loss:', score[0])
         #print('Test accuracy:', score[1])
-        final_model = sparsity.prune.strip_pruning(model)
-        final_model.summary()
-        print('Saving pruned model to: ', new_pruned_keras_file)
-        final_model.save('{}'.format(output_path),save_format='tf')
-        tflite_model_file = mode_path + "sparse_" + init_model
-        converter = tf.lite.TFLiteConverter.from_keras_model_file(final_model)
-        converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
-        tflite_model = converter.convert()
-        with open(tflite_model_file, 'wb') as f:
-          f.write(tflite_model)
-          
+    final_model=model
+    final_model = sparsity.keras.prune.strip_pruning(model)
+    final_model.summary()
+    print('Saving pruned model to: ', new_pruned_keras_file)
+    final_model.save('{}'.format(output_path),save_format='tf')
+    tflite_model_file = model_path + "sparse.tf"
+    converter = tf.lite.TFLiteConverter.from_keras_model(final_model)
+    converter.optimizations = [tf.lite.Optimize.OPTIMIZE_FOR_SIZE]
+    tflite_model = converter.convert()
+    with open(tflite_model_file, 'wb') as f:
+      f.write(tflite_model)
+
 if __name__ == '__main__':
     _main(parser.parse_args())
