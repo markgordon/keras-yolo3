@@ -97,9 +97,15 @@ def _main():
 
         new_pruned_model = prune.prune_low_magnitude(model, **new_pruning_params)
         new_pruned_model.summary()
-
+        yolo_loss = YoloLoss(input_shape,
+                             num_classes,
+                             anchors,
+                             coord_scale,
+                             class_scale,
+                             object_scale,
+                             no_object_scale)
         new_pruned_model.compile(
-            loss=tf.keras.losses.categorical_crossentropy,
+            loss=yolo_loss,
             optimizer='adam',
             metrics=['accuracy'])
         callbacks = [

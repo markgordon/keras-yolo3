@@ -17,6 +17,7 @@ import numpy as np
 from tensorflow.keras.optimizers import Adam, SGD
 from tensorflow.keras.layers import Input, Lambda
 from tensorflow.python.keras import backend as K
+import tensorflow.keras.backend as Backend
 from tensorflow.python.keras import layers as L
 from tensorflow.python.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
                           UpSampling2D, MaxPooling2D, Concatenate, BatchNormalization, LeakyReLU)
@@ -65,14 +66,7 @@ def unique_config_sections(config_file):
     return output_stream
 
 # %%
-def _main(args):
-    pruning_params = {
-          'pruning_schedule': pruning_schedule.PolynomialDecay(initial_sparsity=0.40,
-                                                       final_sparsity=0.80,
-                                                       begin_step=0,
-                                                       end_step=5,
-                                                       frequency=100)
-    }
+def convert(model_file, weights_file,**kwargs):
     annotation_path = 'model_data/combined1.txt'
     log_dir = 'logs/000/'
     classes_path = 'model_data/classes.txt'
@@ -88,14 +82,9 @@ def _main(args):
     init_epoch = 50
     input_shape = (384,288) # multiple of 32, hw
     log_dir = 'logs/000/'
-    config_path = os.path.expanduser(args.config_path)
-    weights_path = os.path.expanduser(args.weights_path)
-    assert config_path.endswith('.cfg'), '{} is not a .cfg file'.format(
-        config_path)
-    assert weights_path.endswith(
-        '.weights'), '{} is not a .weights file'.format(weights_path)
-
-    output_path = os.path.expanduser(args.output_path)
+    config_path = model_file
+    weights_path = weights_file
+    output_path = model_file + '.tf'
     output_root = os.path.splitext(output_path)[0]
     val_split = 0.1
     with open(annotation_path) as f:
@@ -289,14 +278,15 @@ def _main(args):
     # Create and save model.
     if len(out_index)==0: out_index.append(len(all_layers)-1)
     num_anchors = len(anchors)
-    h,w = input_shape
-    y_true = [Input(shape=(h//{0:32, 1:16, 2:8}[l], w//{0:32, 1:16, 2:8}[l], \
-        num_anchors//3, num_classes+5)) for l in range(3)]
-    model_loss = Lambda(yolo_loss, output_shape=(1,), name='yolo_loss',
-        arguments={'anchors': anchors, 'num_classes': num_classes, 'ignore_thresh': 0.5})(
-        [[all_layers[i] for i in out_index], *y_true])
-    model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index], model_loss=model_loss)
-    print(model.summary())
+    if(len(out_index)>0):
+        y1_reshape = Backend.reshape(all_layers[out_index[0]],(18, 24, num_classes, 5 + num_anchors))
+    if(len(out_index)>1):
+        y2_reshape = Backend.reshape(all_layers[out_index[1]],(18, 24, num_classes, 5 +  num_anchors))
+    yolo_model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
+    yolo_model_wrapper = Model(input_layer, [y1_reshape, y2_reshape])
+    print(yolo_model.summary())
+    return yolo_model,yolo_model_wrapper
+
     if False:
         if args.weights_only:
             model.save_weights('{}'.format(output_path))
