@@ -4,8 +4,7 @@ Reads Darknet config and weights and creates Keras model with TF backend.
 
 """
 
-import pyximport
-pyximport.install()
+
 import configparser
 import argparse
 import configparser
@@ -14,24 +13,23 @@ import os
 from collections import defaultdict
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras.optimizers import Adam, SGD
-from tensorflow.keras.layers import Input, Lambda
+from tensorflow.python.keras.optimizers import Adam, SGD
 from tensorflow.python.keras import backend as K
-import tensorflow.keras.backend as Backend
-from tensorflow.python.keras import layers as L
 from tensorflow.python.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
-                          UpSampling2D, MaxPooling2D, Concatenate, BatchNormalization, LeakyReLU)
-from tensorflow.python.keras.activations import sigmoid
+                          UpSampling2D, MaxPooling2D, Concatenate)
+from tensorflow.python.keras.layers.advanced_activations import LeakyReLU
+from tensorflow.python.keras.layers.normalization import BatchNormalization
 from tensorflow.python.keras.models import Model
 from tensorflow.python.keras.regularizers import l2
+from tensorflow.python.keras.utils.vis_utils import plot_model as plot
 #from tensorflow.keras.utils.vis_utils import plot_model as plot
 from tensorflow_model_optimization.python.core import sparsity
-from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
+from tensorflow.python.keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from tensorflow_model_optimization.python.core.sparsity.keras import prune
 from tensorflow_model_optimization.python.core.sparsity.keras import pruning_callbacks
 from tensorflow_model_optimization.python.core.sparsity.keras import pruning_schedule
 from train import get_anchors,get_classes,data_generator_wrapper
-from yolo3.model import yolo_loss
+import numpy as np
 parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
 parser.add_argument('config_path', help='Path to Darknet cfg file.')
 parser.add_argument('weights_path', help='Path to Darknet weights file.')
@@ -66,13 +64,14 @@ def unique_config_sections(config_file):
     return output_stream
 
 # %%
-def convert(model_file, weights_file,anchors,**kwargs):
+def make_model(model_file, weights_file,anchor_file,**kwargs):
     annotation_path = 'model_data/combined1.txt'
     log_dir = 'logs/000/'
     classes_path = 'model_data/classes.txt'
     anchors_path = 'model_data/yolo_anchors.txt'
     class_names = get_classes(classes_path)
     num_classes = len(class_names)
+    anchors = np.load(anchor_file,allow_pickle=True)
     model_path = 'model_data/'
     init_model= model_path + '/pelee3'
     new_pruned_keras_file = model_path + 'pruned_' + init_model
@@ -188,7 +187,7 @@ def convert(model_file, weights_file,anchors,**kwargs):
                 # Darknet uses left and top padding instead of 'same' mode
                 prev_layer = ZeroPadding2D(((1,0),(1,0)))(prev_layer)
             if(first_layer):
-                conv_layer = L.Conv2D(
+                conv_layer = Conv2D(
                     filters, (size, size),
                     strides=(stride, stride),
                     kernel_regularizer=l2(weight_decay),
@@ -197,7 +196,7 @@ def convert(model_file, weights_file,anchors,**kwargs):
                     activation=act_fn,
                     padding=padding)(prev_layer)
             else:
-                conv_layer =  prune.prune_low_magnitude(L.Conv2D(
+                conv_layer = prune.prune_low_magnitude(Conv2D(
                         filters, (size, size),
                         strides=(stride, stride),
                         kernel_regularizer=l2(weight_decay),
@@ -286,7 +285,7 @@ def convert(model_file, weights_file,anchors,**kwargs):
     yolo_model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
     yolo_model_wrapper = Model(input_layer, [y1_reshape, y2_reshape])
     print(yolo_model.summary())
-   # return yolo_model,yolo_model_wrapper
+    return yolo_model,yolo_model_wrapper
 
     if False:
         if args.weights_only:
