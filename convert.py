@@ -66,14 +66,13 @@ def unique_config_sections(config_file):
     return output_stream
 
 # %%
-def convert(model_file, weights_file,**kwargs):
+def convert(model_file, weights_file,anchors,**kwargs):
     annotation_path = 'model_data/combined1.txt'
     log_dir = 'logs/000/'
     classes_path = 'model_data/classes.txt'
     anchors_path = 'model_data/yolo_anchors.txt'
     class_names = get_classes(classes_path)
     num_classes = len(class_names)
-    anchors = get_anchors(anchors_path)
     model_path = 'model_data/'
     init_model= model_path + '/pelee3'
     new_pruned_keras_file = model_path + 'pruned_' + init_model
@@ -277,15 +276,17 @@ def convert(model_file, weights_file,**kwargs):
 
     # Create and save model.
     if len(out_index)==0: out_index.append(len(all_layers)-1)
-    num_anchors = len(anchors)
+    num_anchors = len(anchors[1])
     if(len(out_index)>0):
-        y1_reshape = Backend.reshape(all_layers[out_index[0]],(18, 24, num_classes, 5 + num_anchors))
+        shape = K.int_shape(all_layers[out_index[0]])
+        y1_reshape = Backend.reshape(all_layers[out_index[0]],(shape[1],shape[2], num_anchors, 5 + num_classes))
     if(len(out_index)>1):
-        y2_reshape = Backend.reshape(all_layers[out_index[1]],(18, 24, num_classes, 5 +  num_anchors))
+        shape = K.int_shape(all_layers[out_index[1]])
+        y2_reshape = Backend.reshape(all_layers[out_index[1]],(shape[1],shape[2], num_anchors, 5 + num_classes))
     yolo_model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
     yolo_model_wrapper = Model(input_layer, [y1_reshape, y2_reshape])
     print(yolo_model.summary())
-    return yolo_model,yolo_model_wrapper
+   # return yolo_model,yolo_model_wrapper
 
     if False:
         if args.weights_only:
@@ -305,7 +306,7 @@ def convert(model_file, weights_file,**kwargs):
 
     if True:
         model = create_model(model, anchors, num_classes, input_shape, input_layer, layers, out_index)
-        model.compile(
+        yolo_model_wrapper.compile(
             loss=tf.keras.losses.categorical_crossentropy,
             optimizer='adam',
             metrics=['accuracy'],
