@@ -12,7 +12,7 @@ import io
 import os
 from collections import defaultdict
 import tensorflow as tf
-import numpy as np
+import tensorflow.keras.layers as KLayer
 from tensorflow.python.keras.optimizers import Adam, SGD
 from tensorflow.python.keras import backend as K
 from tensorflow.python.keras.layers import (Conv2D, Input, ZeroPadding2D, Add,
@@ -21,13 +21,10 @@ from tensorflow.python.keras.layers.advanced_activations import LeakyReLU
 from tensorflow.python.keras.layers.normalization import BatchNormalization
 from tensorflow.python.keras.models import Model
 from tensorflow.python.keras.regularizers import l2
-from tensorflow.python.keras.utils.vis_utils import plot_model as plot
-#from tensorflow.keras.utils.vis_utils import plot_model as plot
-from tensorflow_model_optimization.python.core import sparsity
+from tensorflow_model_optimization.python.core.sparsity import keras as sparsity
 from tensorflow.python.keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
+import tensorflow_model_optimization as tfmot
 from tensorflow_model_optimization.python.core.sparsity.keras import prune
-from tensorflow_model_optimization.python.core.sparsity.keras import pruning_callbacks
-from tensorflow_model_optimization.python.core.sparsity.keras import pruning_schedule
 from train import get_anchors,get_classes,data_generator_wrapper
 import numpy as np
 parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
@@ -64,7 +61,14 @@ def unique_config_sections(config_file):
     return output_stream
 
 # %%
-def make_model(model_file, weights_file,anchor_file,**kwargs):
+def make_model(model_file,
+               weights_file,
+               anchor_file,
+               end_step,
+               initial_sparsity,
+               end_sparsity,
+               frequency,
+               **kwargs):
     annotation_path = 'model_data/combined1.txt'
     log_dir = 'logs/000/'
     classes_path = 'model_data/classes.txt'
@@ -114,6 +118,13 @@ def make_model(model_file, weights_file,anchor_file,**kwargs):
                          ) if 'net_0' in cfg_parser.sections() else 5e-4
     count = 0
     out_index = []
+    pruning_params = {
+        'pruning_schedule':tfmot.sparsity.keras.PolynomialDecay(initial_sparsity = initial_sparsity,
+                                                     final_sparsity = end_sparsity,
+                                                     begin_step = 0,
+                                                     end_step = end_step,
+                                                     frequency = frequency)
+    }
     for section in cfg_parser.sections():
         print('Parsing section {}'.format(section))
         if section.startswith('convolutional'):
@@ -196,14 +207,15 @@ def make_model(model_file, weights_file,anchor_file,**kwargs):
                     activation=act_fn,
                     padding=padding)(prev_layer)
             else:
-                conv_layer = prune.prune_low_magnitude(Conv2D(
+                conv_layer =  prune.prune_low_magnitude(Conv2D(
                         filters, (size, size),
                         strides=(stride, stride),
                         kernel_regularizer=l2(weight_decay),
                         use_bias=not batch_normalize,
                         weights=conv_weights,
                         activation=act_fn,
-                        padding=padding))(prev_layer)
+                        padding=padding),
+                        **pruning_params)(prev_layer)
             if batch_normalize:
                 conv_layer = BatchNormalization(
                     weights=bn_weight_list)(conv_layer)
@@ -267,7 +279,7 @@ def make_model(model_file, weights_file,anchor_file,**kwargs):
             width = int(cfg_parser[section]['width'])
             input_layer = Input(shape=(height, width, 3))
             prev_layer = input_layer
-            input_shape = (width, height)
+            output_size = (width, height)
 
         else:
             raise ValueError(
@@ -275,17 +287,21 @@ def make_model(model_file, weights_file,anchor_file,**kwargs):
 
     # Create and save model.
     if len(out_index)==0: out_index.append(len(all_layers)-1)
-    num_anchors = len(anchors[1])
-    if(len(out_index)>0):
+    num_anchors = len(anchors[0])
+    num_layers = len(out_index)
+    if(num_layers>0):
         shape = K.int_shape(all_layers[out_index[0]])
-        y1_reshape = Backend.reshape(all_layers[out_index[0]],(shape[1],shape[2], num_anchors, 5 + num_classes))
-    if(len(out_index)>1):
+        y1_reshape = KLayer.Reshape((shape[1],shape[2], num_anchors, 5 + num_classes), name='l1')(all_layers[out_index[0]])
+    if(num_layers>1):
         shape = K.int_shape(all_layers[out_index[1]])
-        y2_reshape = Backend.reshape(all_layers[out_index[1]],(shape[1],shape[2], num_anchors, 5 + num_classes))
+        y2_reshape = KLayer.Reshape((shape[1],shape[2], num_anchors, 5 + num_classes), name='l2')(all_layers[out_index[1]])
     yolo_model = Model(inputs=input_layer, outputs=[all_layers[i] for i in out_index])
-    yolo_model_wrapper = Model(input_layer, [y1_reshape, y2_reshape])
+    if(num_layers > 1):
+        yolo_model_wrapper = Model(input_layer, [y1_reshape, y2_reshape])
+    else:
+        yolo_model_wrapper = Model(input_layer, [y1_reshape])
     print(yolo_model.summary())
-    return yolo_model,yolo_model_wrapper
+    return yolo_model,yolo_model_wrapper,output_size
 
     if False:
         if args.weights_only:

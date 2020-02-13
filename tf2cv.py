@@ -8,7 +8,7 @@ import configparser
 import io
 import os
 from collections import defaultdict
-
+import tensorflow_model_optimization as tmot
 parser = argparse.ArgumentParser(description='Darknet To Keras Converter.')
 parser.add_argument('input_path', help='Path to Darknet cfg file.')
 parser.add_argument('output_path', help='Path to Darknet weights file.')
@@ -19,6 +19,7 @@ def _main(args):
      input_path = os.path.expanduser(args.input_path)
      output_path = os.path.expanduser(args.output_path)
      model = load_model(input_path)
+     model = tmot.sparsity.keras.strip_pruning(model)
 # Convert the model.
      converter = tf.lite.TFLiteConverter.from_keras_model(model)
      tflite_model = converter.convert()
